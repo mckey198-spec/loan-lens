@@ -1,0 +1,16 @@
+# Project Overview
+- Product: LoanLens (Retail loan verification & underwriting support)
+- Architecture: Modular monolith in Python 3.12+ with FastAPI, Pydantic v2, and PostgreSQL 16
+- Workflow: LangGraph state machine executed via background workers
+
+# Mandatory Engineering Constraints
+- Follow all directives in AGENT_RULES.md and TOOLS.md strictly.
+- Financial arithmetic and verification rules (BR-01 through BR-11) must remain pure, deterministic Python functions. Never use an LLM for math or decision gates.
+- Database access: Use raw SQL via psycopg3; do NOT import SQLAlchemy models or use ORM abstractions in application code.
+- Migrations: Handwrite SQL in Alembic. Do not use autogenerate.
+- Data Lineage: Maintain strict 4-layer field states (extracted, normalized, verified, human_corrected). Never overwrite raw extraction records.
+
+# Code Style & Boundaries
+- Thin API routers; encapsulate business logic inside module services.
+- Always include explicit types across function boundaries.
+- Raise structured errors with `code`, `message`, `details`, and `request_id`.

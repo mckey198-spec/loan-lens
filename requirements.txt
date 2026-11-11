@@ -1,0 +1,18 @@
+# Approved MVP runtime for Compose api/worker images (TOOLS.md §2.1).
+# uvicorn is the ASGI server used to run the approved FastAPI process.
+# Alembic installs SQLAlchemy as a packaging dependency; that is not an ORM approval (TOOLS.md §3).
+# Application data access: psycopg (v3) + psycopg_pool only (M02-T01). Do not import SQLAlchemy from app modules.
+# Test runner: pytest + pytest-asyncio + httpx (M02-T02).
+# Password hashing: argon2-cffi (Argon2id) approved for M02-T05 / ADR-019.
+fastapi==0.121.1
+python-multipart==0.0.20
+uvicorn==0.38.0
+pydantic-settings==2.16.2
+alembic==1.16.5
+psycopg[binary]==3.2.10
+psycopg-pool==3.2.6
+argon2-cffi==25.1.0
+pytest==8.4.2
+pytest-asyncio==1.2.0
+httpx==0.28.1
+reportlab==4.4.4

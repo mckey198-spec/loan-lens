@@ -1,0 +1,103 @@
+# MVP Compose topology (Architecture §14, ADR-006, ADR-025, ADR-026).
+# Services: api, worker, db, scanner, web. No Redis or broker.
+
+services:
+  db:
+    image: pgvector/pgvector:pg16
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+      POSTGRES_DB: loanlens
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+      start_period: 10s
+
+  scanner:
+    image: clamav/clamav:latest
+    ports:
+      - "3310:3310"
+
+  api:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    command: ["uvicorn", "apps.api.main:app", "--host", "0.0.0.0", "--port", "8000"]
+    ports:
+      - "8000:8000"
+    environment:
+      APP_ENV: local
+      DEBUG: "false"
+      WORKER_LEASE_TTL_SECONDS: "60"
+      MAX_PROCESSING_RETRIES: "3"
+      MAX_UPLOAD_SIZE_BYTES: "26214400"
+      DATABASE_URL: postgresql://postgres:postgres@db:5432/loanlens
+      QUARANTINE_DIR: /data/quarantine
+      CLEAN_UPLOADS_DIR: /data/clean_uploads
+      CLAMAV_HOST: scanner
+      CLAMAV_PORT: "3310"
+      CLAMAV_BACKEND: clamav
+      CLAMAV_FALLBACK_TO_MOCK: "false"
+      OPENAI_API_KEY: ""
+      ANTHROPIC_API_KEY: ""
+      SESSION_COOKIE_NAME: loanlens_session
+      SESSION_IDLE_TIMEOUT_SECONDS: "1800"
+      SESSION_ABSOLUTE_TIMEOUT_SECONDS: "86400"
+      ARGON2_TIME_COST: "2"
+      ARGON2_MEMORY_COST: "65536"
+      ARGON2_PARALLELISM: "1"
+    volumes:
+      - quarantine:/data/quarantine
+      - clean_uploads:/data/clean_uploads
+    depends_on:
+      db:
+        condition: service_healthy
+      scanner:
+        condition: service_started
+
+  worker:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    command: ["python", "-m", "apps.worker.main"]
+    environment:
+      APP_ENV: local
+      DEBUG: "false"
+      WORKER_LEASE_TTL_SECONDS: "60"
+      MAX_PROCESSING_RETRIES: "3"
+      MAX_UPLOAD_SIZE_BYTES: "26214400"
+      DATABASE_URL: postgresql://postgres:postgres@db:5432/loanlens
+      QUARANTINE_DIR: /data/quarantine
+      CLEAN_UPLOADS_DIR: /data/clean_uploads
+      CLAMAV_HOST: scanner
+      CLAMAV_PORT: "3310"
+      CLAMAV_BACKEND: clamav
+      CLAMAV_FALLBACK_TO_MOCK: "false"
+      OPENAI_API_KEY: ""
+      ANTHROPIC_API_KEY: ""
+    volumes:
+      - quarantine:/data/quarantine
+      - clean_uploads:/data/clean_uploads
+    depends_on:
+      db:
+        condition: service_healthy
+
+  web:
+    build:
+      context: ./apps/web
+      dockerfile: Dockerfile
+    ports:
+      - "5173:80"
+    depends_on:
+      - api
+
+volumes:
+  postgres_data:
+  quarantine:
+  clean_uploads:
