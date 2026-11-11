@@ -7,7 +7,7 @@ import type { FoirResult } from "../types/domain";
  */
 
 export const DEFAULT_ANNUAL_RATE_PCT = 10.5;
-export const DEFAULT_TENURE_MONTHS = 60;
+export const DEFAULT_TENURE_MONTHS = 36;
 export const DEFAULT_FOIR_THRESHOLD_PCT = 50;
 
 const FOIR_UNDEFINABLE = 999.99;

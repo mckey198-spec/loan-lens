@@ -42,6 +42,7 @@ async function fillValidDraft(
     pan: string;
     amount: string;
     income: string;
+    grossIncome: string;
     purpose: string;
   }> = {},
 ): Promise<void> {
@@ -50,12 +51,14 @@ async function fillValidDraft(
     pan: "ABCDE1234F",
     amount: "500000",
     income: "65000",
-    purpose: "Micro-Enterprise Working Capital (24 mos)",
+    grossIncome: "80000",
+    purpose: "Micro-Enterprise Working Capital",
     ...overrides,
   };
   await user.type(screen.getByTestId("new-app-applicant"), values.applicant);
   await user.type(screen.getByTestId("new-app-pan"), values.pan);
   await user.type(screen.getByTestId("new-app-amount"), values.amount);
+  await user.type(screen.getByTestId("new-app-gross-income"), values.grossIncome);
   await user.type(screen.getByTestId("new-app-income"), values.income);
   await user.type(screen.getByTestId("new-app-purpose"), values.purpose);
 }
@@ -101,7 +104,9 @@ describe("NewApplicationModal", () => {
     const pan = screen.getByTestId("new-app-pan");
     expect(pan).toHaveClass("font-mono", "uppercase", "tracking-wider");
     expect(screen.getByTestId("new-app-amount").closest(".currency-input")).not.toBeNull();
+    expect(screen.getByTestId("new-app-gross-income").closest(".currency-input")).not.toBeNull();
     expect(screen.getByTestId("new-app-income").closest(".currency-input")).not.toBeNull();
+    expect(screen.getByTestId("new-app-tenor")).toHaveValue("36");
 
     await user.type(pan, "ABCDEFGH");
 

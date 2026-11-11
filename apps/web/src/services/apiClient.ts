@@ -26,6 +26,7 @@ import {
 import {
   createMockDraft,
   decideMockApplication,
+  discardMockDraft,
   getMockApplication,
   getMockApplicationAuditEvents,
   getMockApplications,
@@ -132,7 +133,7 @@ function toDomainStatus(
     case "draft":
       return "Draft";
     case "archived":
-      return "Rejected";
+      return "Discarded";
     case "review_completed":
       if (
         assessment?.recommendation === "approve" ||
@@ -160,6 +161,8 @@ function toDomain(
     pan: toPan(application.applicant.pan),
     amount: Number(application.requested_amount),
     income: Number(application.applicant.net_monthly_income),
+    grossIncome: Number(application.applicant.gross_monthly_income),
+    tenor_months: application.tenure_months,
     // Bureau score is not exposed by `/api/v1/applications`.
     cibil: 0,
     status: toDomainStatus(application, assessment),
@@ -239,7 +242,7 @@ const live = {
     const created = await createLiveApplication({
       applicant_type: intake.applicantType,
       requested_amount: toMoney(input.amount),
-      tenure_months: intake.tenureMonths,
+      tenure_months: input.tenor_months || intake.tenureMonths,
       loan_purpose: input.purpose,
       loan_purpose_other: input.notes || null,
       applicant: {
@@ -249,7 +252,7 @@ const live = {
         current_address: intake.currentAddress,
         employer_or_business_name: intake.employerOrBusinessName,
         time_in_job_or_business_months: intake.timeInJobOrBusinessMonths,
-        gross_monthly_income: toMoney(intake.grossMonthlyIncome),
+        gross_monthly_income: toMoney(input.grossIncome || intake.grossMonthlyIncome),
         net_monthly_income: toMoney(input.income),
         total_existing_monthly_emis: toMoney(intake.totalExistingMonthlyEmis),
       },
@@ -272,6 +275,9 @@ const live = {
     if (updates.income !== undefined) {
       applicantPatch.net_monthly_income = toMoney(updates.income);
     }
+    if (updates.grossIncome !== undefined) {
+      applicantPatch.gross_monthly_income = toMoney(updates.grossIncome);
+    }
     const payload: Record<string, unknown> = {};
     if (updates.amount !== undefined) {
       payload.requested_amount = toMoney(updates.amount);
@@ -282,6 +288,9 @@ const live = {
     if (updates.notes !== undefined) {
       payload.loan_purpose_other = updates.notes || null;
     }
+    if (updates.tenor_months !== undefined) {
+      payload.tenure_months = updates.tenor_months;
+    }
     if (Object.keys(applicantPatch).length > 0) {
       payload.applicant = applicantPatch;
     }
@@ -290,6 +299,18 @@ const live = {
       payload as Parameters<typeof updateApplication>[1],
     );
     return toDomain(updated);
+  },
+
+  async discardDraft(ref: string): Promise<Application> {
+    const applicationId = await resolveApplicationId(ref);
+    const archived = await apiFetch<LiveApplication>(
+      `/api/v1/applications/${applicationId}/withdraw`,
+      {
+        method: "POST",
+        body: JSON.stringify({ reason: "Draft discarded by loan officer." }),
+      },
+    );
+    return toDomain(archived);
   },
 
   async submitToReviewer(ref: string): Promise<Application> {
@@ -380,6 +401,10 @@ export function recordDecision(
     : live.recordDecision(ref, decision, note);
 }
 
+export function discardDraft(ref: string): Promise<Application> {
+  return isDemoMode() ? discardMockDraft(ref) : live.discardDraft(ref);
+}
+
 /** When `ref` is omitted, returns the global ledger (admin). With `ref`, application-scoped. */
 export function fetchAuditEvents(ref?: string): Promise<AuditEvent[]> {
   if (isDemoMode()) {
@@ -404,6 +429,7 @@ export const apiClient = {
   updateDraft,
   submitToReviewer,
   recordDecision,
+  discardDraft,
   fetchAuditEvents,
   verifyAuditChain,
 } as const;

@@ -77,10 +77,14 @@ describe("application detail page", () => {
       amount: 1_200_000,
       monthlyNetIncome: 110_000,
       existingMonthlyEmis: 0,
+      tenureMonths: 36,
     });
     expect(screen.getByTestId("live-credit-foir")).toHaveTextContent(
       `805 CIBIL • ${Math.round(initial.foirPct)}% FOIR`,
     );
+    expect(screen.getByTestId("application-tenor-metric")).toHaveTextContent(/36 mo/);
+    expect(screen.getByTestId("detail-gross-income")).toHaveValue(140_000);
+    expect(screen.getByTestId("detail-income")).toHaveValue(110_000);
 
     const income = screen.getByTestId("detail-income");
     await user.clear(income);
@@ -90,6 +94,7 @@ describe("application detail page", () => {
       amount: 1_200_000,
       monthlyNetIncome: 90_000,
       existingMonthlyEmis: 0,
+      tenureMonths: 36,
     });
     await waitFor(() => {
       expect(screen.getByTestId("live-credit-foir")).toHaveTextContent(
@@ -97,6 +102,34 @@ describe("application detail page", () => {
       );
     });
     expect(Math.round(updated.foirPct)).not.toBe(Math.round(initial.foirPct));
+  });
+
+  it("discards a draft with DRAFT_DISCARDED audit and keeps the row", async () => {
+    const user = userEvent.setup();
+    renderWithProviders(<App />, { route: `/applications/${DRAFT_REF}` });
+    await screen.findByTestId("discard-draft");
+
+    await user.click(screen.getByTestId("discard-draft"));
+
+    expect(await screen.findByText(`Draft ${DRAFT_REF} discarded`)).toBeInTheDocument();
+    expect(
+      within(screen.getByTestId("application-detail-page")).getByText("Discarded"),
+    ).toBeInTheDocument();
+    expect(screen.queryByTestId("discard-draft")).not.toBeInTheDocument();
+    expect(screen.queryByTestId("save-draft")).not.toBeInTheDocument();
+
+    const ledger = screen.getByTestId("application-audit-ledger");
+    expect(within(ledger).getByText(/Draft · Discarded/i)).toBeInTheDocument();
+  });
+
+  it("shows an immutable-history hint for completed applications", async () => {
+    renderWithProviders(<App />, { route: `/applications/${SUBMITTED_REF}` });
+    const hint = await screen.findByTestId("immutable-history-hint");
+    expect(hint).toHaveAttribute(
+      "title",
+      "Regulatory compliance requires an immutable audit history; completed applications cannot be deleted.",
+    );
+    expect(screen.queryByTestId("discard-draft")).not.toBeInTheDocument();
   });
 
   it("submits a draft to the reviewer and transitions status to Submitted", async () => {

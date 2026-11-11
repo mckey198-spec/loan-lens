@@ -6,9 +6,19 @@
 
 export type UserRole = "admin" | "loan_officer" | "reviewer";
 
-export type ApplicationStatus = "Draft" | "Submitted" | "Approved" | "Rejected";
+export type ApplicationStatus =
+  | "Draft"
+  | "Submitted"
+  | "Approved"
+  | "Rejected"
+  | "Discarded";
 
 export type ReviewDecision = Extract<ApplicationStatus, "Approved" | "Rejected">;
+
+/** Allowed loan tenor options (months) for intake. */
+export const TENOR_MONTH_OPTIONS = [12, 24, 36, 48, 60] as const;
+export type TenorMonths = (typeof TENOR_MONTH_OPTIONS)[number];
+export const DEFAULT_TENOR_MONTHS: TenorMonths = 36;
 
 declare const panBrand: unique symbol;
 
@@ -34,7 +44,12 @@ export interface Application {
   applicant: string;
   pan: Pan;
   amount: number;
+  /** Monthly net take-home income (INR); FOIR divisor. */
   income: number;
+  /** Monthly gross income (INR). */
+  grossIncome: number;
+  /** Loan tenor in months. */
+  tenor_months: number;
   cibil: number;
   status: ApplicationStatus;
   purpose: string;
@@ -46,7 +61,15 @@ export interface Application {
 /** Fields an officer supplies when opening or editing a draft. */
 export type ApplicationDraftInput = Pick<
   Application,
-  "applicant" | "pan" | "amount" | "income" | "cibil" | "purpose" | "notes"
+  | "applicant"
+  | "pan"
+  | "amount"
+  | "income"
+  | "grossIncome"
+  | "tenor_months"
+  | "cibil"
+  | "purpose"
+  | "notes"
 >;
 
 export interface AuditEvent {

@@ -31,6 +31,8 @@ const draft: ApplicationDraftInput = {
   pan: toPan("fgmpm1234k"),
   amount: 600_000,
   income: 70_000,
+  grossIncome: 90_000,
+  tenor_months: 36,
   cibil: 760,
   purpose: "Education",
   notes: "",

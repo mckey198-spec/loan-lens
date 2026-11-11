@@ -395,6 +395,16 @@ a {
   background: #f9d4d4;
 }
 
+.btn-outline-danger {
+  background: transparent;
+  border-color: var(--danger);
+  color: var(--danger);
+}
+
+.btn-outline-danger:hover:not(:disabled) {
+  background: #fde8e8;
+}
+
 .back-link {
   display: inline-flex;
   align-items: center;
@@ -647,6 +657,35 @@ a {
 .status-badge--Rejected {
   background: #fde8e8;
   color: #9b1c1c;
+}
+
+.status-badge--Discarded {
+  background: #f3e8e8;
+  color: #7f1d1d;
+}
+
+.immutable-history-hint {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.4rem;
+  color: var(--muted);
+  font-size: 0.88rem;
+  cursor: help;
+  max-width: 22rem;
+}
+
+.immutable-history-hint__icon {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 1.1rem;
+  height: 1.1rem;
+  border-radius: 999px;
+  border: 1px solid var(--muted);
+  font-size: 0.72rem;
+  font-weight: 700;
+  font-style: italic;
+  flex-shrink: 0;
 }
 
 .btn-sm {

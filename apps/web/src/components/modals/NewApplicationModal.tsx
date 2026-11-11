@@ -3,15 +3,17 @@ import { useMemo, useState, type FormEvent } from "react";
 import { ApiError, type ApplicantType } from "../../api/types";
 import { apiClient, type IntakeDetails } from "../../services/apiClient";
 import {
+  DEFAULT_TENOR_MONTHS,
   isValidPan,
+  TENOR_MONTH_OPTIONS,
   toPan,
   type Application,
   type ApplicationDraftInput,
+  type TenorMonths,
 } from "../../types/domain";
 import { ModalShell } from "./ModalShell";
 
 const DEFAULT_CIBIL = 750;
-const DEFAULT_TENURE_MONTHS = 24;
 const DEFAULT_TIME_IN_JOB_MONTHS = 12;
 const DEFAULT_DATE_OF_BIRTH = "1990-01-01";
 const DEFAULT_ADDRESS = "To be confirmed";
@@ -22,15 +24,15 @@ interface FormState {
   pan: string;
   amount: string;
   income: string;
+  grossIncome: string;
+  tenorMonths: string;
   purpose: string;
   dateOfBirth: string;
   currentAddress: string;
   employer: string;
   timeInJobMonths: string;
-  grossIncome: string;
   existingEmis: string;
   applicantType: ApplicantType;
-  tenureMonths: string;
 }
 
 const EMPTY_FORM: FormState = {
@@ -38,15 +40,15 @@ const EMPTY_FORM: FormState = {
   pan: "",
   amount: "",
   income: "",
+  grossIncome: "",
+  tenorMonths: String(DEFAULT_TENOR_MONTHS),
   purpose: "",
   dateOfBirth: DEFAULT_DATE_OF_BIRTH,
   currentAddress: DEFAULT_ADDRESS,
   employer: DEFAULT_EMPLOYER,
   timeInJobMonths: String(DEFAULT_TIME_IN_JOB_MONTHS),
-  grossIncome: "",
   existingEmis: "0",
   applicantType: "salaried",
-  tenureMonths: String(DEFAULT_TENURE_MONTHS),
 };
 
 interface NewApplicationModalProps {
@@ -109,11 +111,15 @@ export function NewApplicationModal({ onClose, onCreated }: NewApplicationModalP
   function buildDraft(): ApplicationDraftInput | null {
     const amount = parsePositiveNumber(form.amount);
     const income = parsePositiveNumber(form.income);
+    const grossIncome = parsePositiveNumber(form.grossIncome);
+    const tenorMonths = Number(form.tenorMonths);
     if (
       form.applicant.trim() === "" ||
       !isValidPan(form.pan.trim()) ||
       amount === null ||
       income === null ||
+      grossIncome === null ||
+      !TENOR_MONTH_OPTIONS.includes(tenorMonths as TenorMonths) ||
       form.purpose.trim() === ""
     ) {
       return null;
@@ -123,39 +129,35 @@ export function NewApplicationModal({ onClose, onCreated }: NewApplicationModalP
       pan: toPan(form.pan),
       amount,
       income,
+      grossIncome,
+      tenor_months: tenorMonths,
       cibil: DEFAULT_CIBIL,
       purpose: form.purpose.trim(),
       notes: "",
     };
   }
 
-  function buildIntake(income: number): IntakeDetails | null {
-    const gross =
-      parsePositiveNumber(form.grossIncome) ??
-      // Live API expects gross; default to net when the officer leaves it blank.
-      income;
+  function buildIntake(draft: ApplicationDraftInput): IntakeDetails | null {
     const timeInJob = parseNonNegativeNumber(form.timeInJobMonths);
     const existingEmis = parseNonNegativeNumber(form.existingEmis);
-    const tenureMonths = parsePositiveNumber(form.tenureMonths);
     if (
       form.dateOfBirth.trim() === "" ||
       form.currentAddress.trim() === "" ||
       form.employer.trim() === "" ||
       timeInJob === null ||
-      existingEmis === null ||
-      tenureMonths === null
+      existingEmis === null
     ) {
       return null;
     }
     return {
       totalExistingMonthlyEmis: existingEmis,
       applicantType: form.applicantType,
-      tenureMonths: Math.trunc(tenureMonths),
+      tenureMonths: draft.tenor_months,
       dateOfBirth: form.dateOfBirth.trim(),
       currentAddress: form.currentAddress.trim(),
       employerOrBusinessName: form.employer.trim(),
       timeInJobOrBusinessMonths: Math.trunc(timeInJob),
-      grossMonthlyIncome: gross,
+      grossMonthlyIncome: draft.grossIncome,
     };
   }
 
@@ -172,7 +174,7 @@ export function NewApplicationModal({ onClose, onCreated }: NewApplicationModalP
 
     let intake: IntakeDetails | undefined;
     if (dataMode === "live") {
-      const built = buildIntake(draft.income);
+      const built = buildIntake(draft);
       if (!built) {
         setShowLiveDetails(true);
         setApiError("Live mode requires the additional intake details below.");
@@ -287,7 +289,26 @@ export function NewApplicationModal({ onClose, onCreated }: NewApplicationModalP
           </label>
 
           <label>
-            Monthly Net Income (INR)
+            Monthly Gross Income (INR)
+            <div className="currency-input">
+              <span className="currency-input__prefix" aria-hidden="true">
+                ₹
+              </span>
+              <input
+                type="number"
+                min={1}
+                step="any"
+                value={form.grossIncome}
+                onChange={(e) => updateField("grossIncome", e.target.value)}
+                required
+                disabled={submitting}
+                data-testid="new-app-gross-income"
+              />
+            </div>
+          </label>
+
+          <label>
+            Monthly Net Take-Home (INR)
             <div className="currency-input">
               <span className="currency-input__prefix" aria-hidden="true">
                 ₹
@@ -305,12 +326,29 @@ export function NewApplicationModal({ onClose, onCreated }: NewApplicationModalP
             </div>
           </label>
 
+          <label>
+            Loan Tenor (Months)
+            <select
+              value={form.tenorMonths}
+              onChange={(e) => updateField("tenorMonths", e.target.value)}
+              required
+              disabled={submitting}
+              data-testid="new-app-tenor"
+            >
+              {TENOR_MONTH_OPTIONS.map((months) => (
+                <option key={months} value={months}>
+                  {months} months
+                </option>
+              ))}
+            </select>
+          </label>
+
           <label className="span-2">
             Loan Purpose
             <input
               value={form.purpose}
               onChange={(e) => updateField("purpose", e.target.value)}
-              placeholder="Micro-Enterprise Working Capital (24 mos)"
+              placeholder="Micro-Enterprise Working Capital"
               required
               disabled={submitting}
               data-testid="new-app-purpose"
@@ -385,19 +423,6 @@ export function NewApplicationModal({ onClose, onCreated }: NewApplicationModalP
                 />
               </label>
               <label>
-                Gross monthly income (INR)
-                <input
-                  type="number"
-                  min={1}
-                  step="any"
-                  value={form.grossIncome}
-                  onChange={(e) => updateField("grossIncome", e.target.value)}
-                  placeholder="Defaults to net income"
-                  disabled={submitting}
-                  data-testid="new-app-gross-income"
-                />
-              </label>
-              <label>
                 Existing monthly EMIs (INR)
                 <input
                   type="number"
@@ -405,17 +430,6 @@ export function NewApplicationModal({ onClose, onCreated }: NewApplicationModalP
                   step="any"
                   value={form.existingEmis}
                   onChange={(e) => updateField("existingEmis", e.target.value)}
-                  required
-                  disabled={submitting}
-                />
-              </label>
-              <label>
-                Tenure (months)
-                <input
-                  type="number"
-                  min={1}
-                  value={form.tenureMonths}
-                  onChange={(e) => updateField("tenureMonths", e.target.value)}
                   required
                   disabled={submitting}
                 />

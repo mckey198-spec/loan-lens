@@ -57,6 +57,8 @@ function seedProfiles(): SeedProfile[] {
           pan: toPan("BQRPP5821M"),
           amount: 1_500_000,
           income: 95_000,
+          grossIncome: 120_000,
+          tenor_months: 60,
           cibil: 782,
           status: "Approved",
           purpose: "Home renovation",
@@ -78,6 +80,8 @@ function seedProfiles(): SeedProfile[] {
           pan: toPan("CHNPN7340D"),
           amount: 800_000,
           income: 62_000,
+          grossIncome: 80_000,
+          tenor_months: 48,
           cibil: 731,
           status: "Submitted",
           purpose: "Vehicle purchase",
@@ -97,6 +101,8 @@ function seedProfiles(): SeedProfile[] {
           pan: toPan("DKBPB2196H"),
           amount: 450_000,
           income: 38_000,
+          grossIncome: 45_000,
+          tenor_months: 24,
           cibil: 648,
           status: "Rejected",
           purpose: "Medical expenses",
@@ -118,6 +124,8 @@ function seedProfiles(): SeedProfile[] {
           pan: toPan("EYSPS6603Q"),
           amount: 1_200_000,
           income: 110_000,
+          grossIncome: 140_000,
+          tenor_months: 36,
           cibil: 805,
           status: "Draft",
           purpose: "Business expansion",
@@ -327,7 +335,19 @@ function validateDraftFields(fields: Partial<ApplicationDraftInput>): void {
     errors.amount = "Loan amount must be a positive number.";
   }
   if (fields.income !== undefined && !(Number.isFinite(fields.income) && fields.income >= 0)) {
-    errors.income = "Monthly income must be zero or positive.";
+    errors.income = "Monthly net take-home must be zero or positive.";
+  }
+  if (
+    fields.grossIncome !== undefined &&
+    !(Number.isFinite(fields.grossIncome) && fields.grossIncome >= 0)
+  ) {
+    errors.grossIncome = "Monthly gross income must be zero or positive.";
+  }
+  if (
+    fields.tenor_months !== undefined &&
+    !(Number.isInteger(fields.tenor_months) && fields.tenor_months > 0)
+  ) {
+    errors.tenor_months = "Loan tenor must be a positive integer (months).";
   }
   if (
     fields.cibil !== undefined &&
@@ -403,6 +423,18 @@ export function submitMockApplication(ref: string): Promise<Application> {
   });
 }
 
+/** Soft-archive a draft: status → Discarded, append DRAFT_DISCARDED audit event. */
+export function discardMockDraft(ref: string): Promise<Application> {
+  return serialized(async () => {
+    const actor = requireRole("loan_officer", "admin");
+    const record = findRecord(ref);
+    assertStatus(record.application, "Draft");
+    await appendAuditEvent(actor.email, "DRAFT_DISCARDED", ref);
+    record.application = { ...record.application, status: "Discarded" };
+    return structuredClone(record.application);
+  });
+}
+
 export function decideMockApplication(
   ref: string,
   decision: ReviewDecision,
@@ -430,6 +462,7 @@ export async function getMockFoir(ref: string): Promise<FoirResult> {
     amount: application.amount,
     monthlyNetIncome: application.income,
     existingMonthlyEmis,
+    tenureMonths: application.tenor_months,
   });
 }
 

@@ -6,27 +6,32 @@ import { PolicyUploadWidget } from "../../components/rag/PolicyUploadWidget";
 import { homePathFor, ROLE_LABELS, useWorkspace } from "../../context/useWorkspace";
 import { ApiError } from "../../api/types";
 import { apiClient } from "../../services/apiClient";
-import {
-  calculateFoir,
-  DEFAULT_TENURE_MONTHS,
-} from "../../services/foir";
+import { calculateFoir } from "../../services/foir";
 import { ROLE_PROFILES } from "../../services/mockData";
-import type {
-  Application,
-  ApplicationStatus,
-  AuditEvent,
-  ReviewDecision,
-  UserRole,
+import {
+  DEFAULT_TENOR_MONTHS,
+  TENOR_MONTH_OPTIONS,
+  type Application,
+  type ApplicationStatus,
+  type AuditEvent,
+  type ReviewDecision,
+  type TenorMonths,
+  type UserRole,
 } from "../../types/domain";
 import { formatInr } from "../../utils/currency";
 
 const MIN_DECISION_NOTE_LENGTH = 10;
 const TOAST_DURATION_MS = 3500;
 
+const IMMUTABLE_HISTORY_HINT =
+  "Regulatory compliance requires an immutable audit history; completed applications cannot be deleted.";
+
 interface FormState {
   applicant: string;
   amount: string;
   income: string;
+  grossIncome: string;
+  tenorMonths: string;
   notes: string;
   reviewerNote: string;
 }
@@ -36,6 +41,8 @@ function emptyForm(): FormState {
     applicant: "",
     amount: "",
     income: "",
+    grossIncome: "",
+    tenorMonths: String(DEFAULT_TENOR_MONTHS),
     notes: "",
     reviewerNote: "",
   };
@@ -46,6 +53,8 @@ function formFromApplication(app: Application): FormState {
     applicant: app.applicant,
     amount: String(app.amount),
     income: String(app.income),
+    grossIncome: String(app.grossIncome),
+    tenorMonths: String(app.tenor_months || DEFAULT_TENOR_MONTHS),
     notes: app.notes,
     reviewerNote: app.reviewerNote,
   };
@@ -71,6 +80,14 @@ function canDecide(role: UserRole | undefined, status: ApplicationStatus): boole
   return (role === "reviewer" || role === "admin") && status === "Submitted";
 }
 
+function canDiscardDraft(role: UserRole | undefined, status: ApplicationStatus): boolean {
+  return (role === "loan_officer" || role === "admin") && status === "Draft";
+}
+
+function isCompletedStatus(status: ApplicationStatus): boolean {
+  return status === "Submitted" || status === "Approved" || status === "Rejected";
+}
+
 function suggestedSwitchRole(
   role: UserRole | undefined,
   status: ApplicationStatus,
@@ -93,6 +110,9 @@ function actorLabel(actorEmail: string): string {
 }
 
 function actionLabel(action: string): string {
+  if (action === "DRAFT_DISCARDED") {
+    return "Draft · Discarded";
+  }
   return action
     .split(".")
     .map((part) => part.charAt(0).toUpperCase() + part.slice(1))
@@ -177,19 +197,30 @@ export function ApplicationDetailPage() {
 
   const drafting = application !== null && canEditDraft(role, application.status);
   const deciding = application !== null && canDecide(role, application.status);
+  const discarding = application !== null && canDiscardDraft(role, application.status);
   const readOnly = !drafting && !deciding;
   const switchTo = application ? suggestedSwitchRole(role, application.status) : null;
+  const showImmutableHint =
+    application !== null &&
+    isCompletedStatus(application.status) &&
+    (role === "loan_officer" || role === "admin");
 
   const liveAmount = parseNonNegative(form.amount) ?? application?.amount ?? 0;
-  const liveIncome = parseNonNegative(form.income) ?? application?.income ?? 0;
+  const liveNetIncome = parseNonNegative(form.income) ?? application?.income ?? 0;
+  const liveTenor =
+    parseNonNegative(form.tenorMonths) ??
+    application?.tenor_months ??
+    DEFAULT_TENOR_MONTHS;
+  const displayTenor = application?.tenor_months || DEFAULT_TENOR_MONTHS;
   const liveFoir = useMemo(
     () =>
       calculateFoir({
         amount: liveAmount,
-        monthlyNetIncome: liveIncome,
+        monthlyNetIncome: liveNetIncome,
         existingMonthlyEmis: 0,
+        tenureMonths: liveTenor,
       }),
-    [liveAmount, liveIncome],
+    [liveAmount, liveNetIncome, liveTenor],
   );
 
   const decisionNoteOk = form.reviewerNote.trim().length >= MIN_DECISION_NOTE_LENGTH;
@@ -205,8 +236,19 @@ export function ApplicationDetailPage() {
     }
     const amount = parseNonNegative(form.amount);
     const income = parseNonNegative(form.income);
-    if (form.applicant.trim() === "" || amount === null || amount <= 0 || income === null) {
-      setActionError("Applicant name, a positive loan amount, and income are required.");
+    const grossIncome = parseNonNegative(form.grossIncome);
+    const tenorMonths = Number(form.tenorMonths);
+    if (
+      form.applicant.trim() === "" ||
+      amount === null ||
+      amount <= 0 ||
+      income === null ||
+      grossIncome === null ||
+      !TENOR_MONTH_OPTIONS.includes(tenorMonths as TenorMonths)
+    ) {
+      setActionError(
+        "Applicant name, a positive loan amount, gross income, net take-home, and tenor are required.",
+      );
       return;
     }
     setBusy(true);
@@ -216,6 +258,8 @@ export function ApplicationDetailPage() {
         applicant: form.applicant.trim(),
         amount,
         income,
+        grossIncome,
+        tenor_months: tenorMonths,
         notes: form.notes,
         pan: application.pan,
         cibil: application.cibil,
@@ -238,13 +282,47 @@ export function ApplicationDetailPage() {
     }
   }
 
+  async function handleDiscardDraft(): Promise<void> {
+    if (!application || !discarding) {
+      return;
+    }
+    setBusy(true);
+    setActionError(null);
+    try {
+      const discarded = await apiClient.discardDraft(application.ref);
+      setApplication(discarded);
+      setForm(formFromApplication(discarded));
+      setAuditEvents(await apiClient.fetchAuditEvents(discarded.ref));
+      setToast(`Draft ${discarded.ref} discarded`);
+    } catch (err) {
+      setActionError(
+        err instanceof ApiError
+          ? err.message
+          : err instanceof Error
+            ? err.message
+            : "Failed to discard draft.",
+      );
+    } finally {
+      setBusy(false);
+    }
+  }
+
   async function handleSubmitToReviewer(): Promise<void> {
     if (!application || !drafting) {
       return;
     }
     const amount = parseNonNegative(form.amount);
     const income = parseNonNegative(form.income);
-    if (form.applicant.trim() === "" || amount === null || amount <= 0 || income === null) {
+    const grossIncome = parseNonNegative(form.grossIncome);
+    const tenorMonths = Number(form.tenorMonths);
+    if (
+      form.applicant.trim() === "" ||
+      amount === null ||
+      amount <= 0 ||
+      income === null ||
+      grossIncome === null ||
+      !TENOR_MONTH_OPTIONS.includes(tenorMonths as TenorMonths)
+    ) {
       setActionError("Complete required fields before submitting.");
       return;
     }
@@ -255,6 +333,8 @@ export function ApplicationDetailPage() {
         applicant: form.applicant.trim(),
         amount,
         income,
+        grossIncome,
+        tenor_months: tenorMonths,
         notes: form.notes,
         pan: application.pan,
         cibil: application.cibil,
@@ -360,8 +440,8 @@ export function ApplicationDetailPage() {
           </article>
           <article className="application-metric">
             <p className="application-metric-label">Loan Purpose &amp; Tenor</p>
-            <p className="application-metric-value">
-              {application.purpose} · {DEFAULT_TENURE_MONTHS} mo
+            <p className="application-metric-value" data-testid="application-tenor-metric">
+              {application.purpose} · {displayTenor} mo
             </p>
           </article>
           <article className="application-metric">
@@ -429,7 +509,36 @@ export function ApplicationDetailPage() {
             </label>
 
             <label>
-              Monthly Net Income (INR)
+              Loan Tenor (Months)
+              <select
+                value={form.tenorMonths}
+                onChange={(e) => updateField("tenorMonths", e.target.value)}
+                disabled={!drafting || busy}
+                data-testid="detail-tenor"
+              >
+                {TENOR_MONTH_OPTIONS.map((months) => (
+                  <option key={months} value={months}>
+                    {months} months
+                  </option>
+                ))}
+              </select>
+            </label>
+
+            <label>
+              Monthly Gross Income (INR)
+              <input
+                type="number"
+                min={0}
+                step="any"
+                value={form.grossIncome}
+                onChange={(e) => updateField("grossIncome", e.target.value)}
+                disabled={!drafting || busy}
+                data-testid="detail-gross-income"
+              />
+            </label>
+
+            <label>
+              Monthly Net Take-Home (INR)
               <input
                 type="number"
                 min={0}
@@ -482,6 +591,17 @@ export function ApplicationDetailPage() {
                 >
                   {busy ? "Saving…" : "Save draft"}
                 </button>
+                {discarding && (
+                  <button
+                    type="button"
+                    className="btn btn-outline-danger"
+                    disabled={busy}
+                    onClick={() => void handleDiscardDraft()}
+                    data-testid="discard-draft"
+                  >
+                    Discard draft
+                  </button>
+                )}
                 <button
                   type="button"
                   className="btn btn-primary"
@@ -492,6 +612,20 @@ export function ApplicationDetailPage() {
                   Submit to Reviewer
                 </button>
               </>
+            )}
+            {showImmutableHint && (
+              <span
+                className="immutable-history-hint"
+                title={IMMUTABLE_HISTORY_HINT}
+                data-testid="immutable-history-hint"
+                tabIndex={0}
+              >
+                <span className="immutable-history-hint__icon" aria-hidden="true">
+                  i
+                </span>
+                <span className="sr-only">{IMMUTABLE_HISTORY_HINT}</span>
+                Completed applications cannot be deleted
+              </span>
             )}
             {deciding && (
               <>

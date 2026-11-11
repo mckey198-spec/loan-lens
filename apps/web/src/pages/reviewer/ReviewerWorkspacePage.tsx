@@ -17,6 +17,7 @@ function creditScoreFoirLabel(app: Application): string {
     amount: app.amount,
     monthlyNetIncome: app.income,
     existingMonthlyEmis: 0,
+    tenureMonths: app.tenor_months,
   });
   return `${app.cibil} CIBIL • ${Math.round(foirPct)}% FOIR`;
 }
