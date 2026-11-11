@@ -240,37 +240,245 @@ export function queryIngestedPolicy(query: string, topK: number = 3): RetrievalR
     .slice(0, topK);
 }
 
+const OPENAI_KEY_STORAGE = "loanlens_openai_api_key";
+
+const POLICY_ANSWER_SYSTEM_PROMPT =
+  "You are an expert credit underwriting assistant for LoanLens. Answer the underwriter's question concisely using ONLY the provided policy context. Format your response clearly with a direct verdict, policy rationale, and specific clause references. Always conclude with an advisory note.";
+
+/** Resolve optional OpenAI key from sessionStorage or Vite env (demo only). */
+export function resolveOpenAiApiKey(): string | null {
+  if (typeof sessionStorage !== "undefined") {
+    const fromSession = sessionStorage.getItem(OPENAI_KEY_STORAGE)?.trim();
+    if (fromSession) {
+      return fromSession;
+    }
+  }
+  const fromEnv =
+    typeof import.meta !== "undefined"
+      ? String(import.meta.env.VITE_OPENAI_API_KEY ?? "").trim()
+      : "";
+  return fromEnv.length > 0 ? fromEnv : null;
+}
+
+/** Persist or clear a user-supplied OpenAI key for this browser session. */
+export function setSessionOpenAiApiKey(key: string | null): void {
+  if (typeof sessionStorage === "undefined") {
+    return;
+  }
+  const trimmed = key?.trim() ?? "";
+  if (trimmed === "") {
+    sessionStorage.removeItem(OPENAI_KEY_STORAGE);
+    return;
+  }
+  sessionStorage.setItem(OPENAI_KEY_STORAGE, trimmed);
+}
+
+function cleanChunkText(content: string): string {
+  return content.replace(/---\s*Page\s+\d+\s*---/gi, " ").replace(/\s+/g, " ").trim();
+}
+
+function extractThresholdHighlights(text: string): string[] {
+  const highlights: string[] = [];
+  const patterns: RegExp[] = [
+    /FOIR[^.]{0,80}?(?:\d+\s*%|≤\s*\d+%|>=?\s*\d+%)/gi,
+    /(?:minimum|max(?:imum)?)\s+(?:net\s+)?(?:monthly\s+)?salary[^.]{0,60}?INR\s*[\d,]+/gi,
+    /INR\s*[\d,]+/gi,
+    /tenure[^.]{0,80}?\d+\s*months?/gi,
+    /CIBIL[^.]{0,60}?\d{3}/gi,
+    /\d+\s*%/g,
+  ];
+  for (const pattern of patterns) {
+    for (const match of text.matchAll(pattern)) {
+      const value = match[0].replace(/\s+/g, " ").trim();
+      if (value.length >= 3 && !highlights.some((h) => h.toLowerCase() === value.toLowerCase())) {
+        highlights.push(value);
+      }
+      if (highlights.length >= 6) {
+        return highlights;
+      }
+    }
+  }
+  return highlights;
+}
+
+function pickRelevantSentences(content: string, query: string, limit: number = 3): string[] {
+  const terms = query
+    .toLowerCase()
+    .split(/\W+/)
+    .filter((w) => w.length > 2);
+  const sentences = (cleanChunkText(content).match(/[^.!;]+[.!;]?/g) ?? [])
+    .map((s) => s.trim())
+    .filter((s) => s.length > 20);
+
+  const ranked = sentences
+    .map((sentence) => {
+      const lower = sentence.toLowerCase();
+      const hits = terms.reduce((acc, term) => (lower.includes(term) ? acc + 1 : acc), 0);
+      return { sentence, hits };
+    })
+    .filter((row) => row.hits > 0)
+    .sort((a, b) => b.hits - a.hits);
+
+  const chosen = (ranked.length > 0 ? ranked : sentences.map((sentence) => ({ sentence, hits: 0 })))
+    .slice(0, limit)
+    .map((row) => row.sentence.replace(/\s+/g, " ").trim());
+
+  return chosen;
+}
+
+/**
+ * Client-side demo fallback: fluent underwriting paragraph from retrieved chunks.
+ * Never dumps raw chunk text as the primary answer.
+ */
+export function generateLocalPolicyAnswer(
+  query: string,
+  contextChunks: IngestedChunk[],
+): string {
+  const trimmedQuery = query.trim();
+  if (contextChunks.length === 0) {
+    return (
+      `Verdict: No strongly matching policy clauses were found for “${trimmedQuery}”.\n\n` +
+      "Policy rationale: Refine the question or upload a more specific policy document so the copilot can cite concrete eligibility, FOIR, salary, or tenure rules.\n\n" +
+      "Advisory note: This guidance is advisory only and is not a credit decision. Final disposition remains with the human reviewer."
+    );
+  }
+
+  const clauseRefs = contextChunks
+    .map(
+      (chunk) =>
+        `${chunk.sourceDoc}, ${chunk.pageLabel}, Chunk #${chunk.chunkIndex}`,
+    )
+    .join("; ");
+
+  const supportingPoints = contextChunks.flatMap((chunk) =>
+    pickRelevantSentences(chunk.content, trimmedQuery, 2),
+  );
+  const uniquePoints = [...new Set(supportingPoints)].slice(0, 4);
+  const joinedContext = contextChunks.map((c) => cleanChunkText(c.content)).join(" ");
+  const thresholds = extractThresholdHighlights(joinedContext);
+  const thresholdPhrase =
+    thresholds.length > 0
+      ? ` Key thresholds in scope include ${thresholds.slice(0, 4).join("; ")}.`
+      : "";
+
+  const lowerQuery = trimmedQuery.toLowerCase();
+  let verdictFocus = "Apply the cited policy clauses before disposition.";
+  if (/\bfoir\b/.test(lowerQuery)) {
+    verdictFocus =
+      "Assess FOIR against the policy ceiling (typically 50% of net monthly income, with tighter bands for enhanced documentation or decline).";
+  } else if (/salary|40k|income/.test(lowerQuery)) {
+    verdictFocus =
+      "Confirm verified net monthly salary against the minimum salary gate and any exception path (for example INR 40,000 with compensating factors).";
+  } else if (/freelance|gig/.test(lowerQuery)) {
+    verdictFocus =
+      "Treat freelance or gig income as eligible only when documentation and contribution caps in the policy are met.";
+  } else if (/tenure|tenor|months/.test(lowerQuery)) {
+    verdictFocus =
+      "Confirm proposed tenure does not exceed the salaried (60 months) or self-employed / freelance (48 months) caps.";
+  } else if (/loan amount|sanction|limit|inr/.test(lowerQuery)) {
+    verdictFocus =
+      "Compare the requested amount to the unsecured personal-loan caps tied to bureau score bands.";
+  } else if (/cibil|bureau|score/.test(lowerQuery)) {
+    verdictFocus =
+      "Apply the minimum bureau score and any exception band (for example 650–699 with tighter FOIR) before recommending approval.";
+  }
+
+  const rationaleBody =
+    uniquePoints.length > 0
+      ? uniquePoints.map((point) => `• ${point}`).join("\n")
+      : `• Relevant rules were retrieved from ${activePolicyName}; cross-check FOIR, income, tenure, and bureau requirements against the live application facts.`;
+
+  return (
+    `Verdict: Regarding “${trimmedQuery}”, ${verdictFocus}${thresholdPhrase}\n\n` +
+    `Policy rationale:\n${rationaleBody}\n\n` +
+    `Clause references: ${clauseRefs}.\n\n` +
+    "Advisory note: This guidance is advisory only and is not a credit decision. Final disposition remains with the human reviewer."
+  );
+}
+
+async function callOpenAiChatCompletion(
+  apiKey: string,
+  query: string,
+  contextChunks: IngestedChunk[],
+): Promise<string> {
+  const contextBlock =
+    contextChunks.length === 0
+      ? "(No policy chunks retrieved.)"
+      : contextChunks
+          .map(
+            (chunk, index) =>
+              `[${index + 1}] ${chunk.sourceDoc} · ${chunk.pageLabel} · Chunk #${chunk.chunkIndex}\n${cleanChunkText(chunk.content)}`,
+          )
+          .join("\n\n");
+
+  const response = await fetch("https://api.openai.com/v1/chat/completions", {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      Authorization: `Bearer ${apiKey}`,
+    },
+    body: JSON.stringify({
+      model: "gpt-4o-mini",
+      temperature: 0.2,
+      messages: [
+        { role: "system", content: POLICY_ANSWER_SYSTEM_PROMPT },
+        {
+          role: "user",
+          content:
+            `Underwriter question:\n${query.trim()}\n\n` +
+            `Policy context (use only this material):\n${contextBlock}\n\n` +
+            "Respond with a direct verdict, policy rationale, specific clause references, and a closing advisory note.",
+        },
+      ],
+    }),
+  });
+
+  if (!response.ok) {
+    throw new Error(`OpenAI request failed (${response.status})`);
+  }
+
+  const payload = (await response.json()) as {
+    choices?: Array<{ message?: { content?: string } }>;
+  };
+  const content = payload.choices?.[0]?.message?.content?.trim() ?? "";
+  if (content === "") {
+    throw new Error("OpenAI returned an empty completion");
+  }
+  return content;
+}
+
+/**
+ * Generative synthesis for the underwriting advisory.
+ * Uses OpenAI when a key is available; otherwise a fluent local demo answer.
+ */
+export async function generatePolicyAnswer(
+  query: string,
+  contextChunks: IngestedChunk[],
+): Promise<string> {
+  const apiKey = resolveOpenAiApiKey();
+  if (apiKey) {
+    try {
+      return await callOpenAiChatCompletion(apiKey, query, contextChunks);
+    } catch {
+      // Fall through to deterministic local advisory — never dump raw chunks.
+    }
+  }
+  return generateLocalPolicyAnswer(query, contextChunks);
+}
+
 /** Deterministic synthesis from retrieved clauses — never a credit decision. */
 export function synthesizeUnderwritingAdvice(
   query: string,
   results: RetrievalResult[],
 ): string {
-  if (results.length === 0) {
-    return (
-      `No strongly matching clauses were found for “${query.trim()}”. ` +
-      "Refine the question or upload a more specific policy document. " +
-      "This output is advisory only and is not a credit decision."
-    );
-  }
-
-  const bullets = results
-    .map(
-      (r, i) =>
-        `${i + 1}. [${r.chunk.sourceDoc} · ${r.chunk.pageLabel} · Chunk #${r.chunk.chunkIndex} · score ${r.score.toFixed(2)}] ` +
-        summarizeSnippet(r.chunk.content),
-    )
-    .join("\n");
-
-  return (
-    `Synthesized policy compliance guidance for “${query.trim()}” ` +
-    `(active corpus: ${activePolicyName}):\n\n${bullets}\n\n` +
-    "Apply these citations alongside FOIR and bureau checks. " +
-    "ADVISORY ONLY — NOT A CREDIT DECISION."
+  return generateLocalPolicyAnswer(
+    query,
+    results.map((result) => result.chunk),
   );
 }
 
 function summarizeSnippet(content: string, maxChars: number = 220): string {
-  const cleaned = content.replace(/---\s*Page\s+\d+\s*---/gi, " ").replace(/\s+/g, " ").trim();
+  const cleaned = cleanChunkText(content);
   if (cleaned.length <= maxChars) {
     return cleaned;
   }

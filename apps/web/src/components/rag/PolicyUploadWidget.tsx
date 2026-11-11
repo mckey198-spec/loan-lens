@@ -2,20 +2,22 @@ import { useMemo, useRef, useState, type ChangeEvent, type DragEvent } from "rea
 
 import { AdvisoryBanner } from "../AdvisoryBanner";
 import {
-  formatCitationForDecisionNote,
+  generatePolicyAnswer,
   getActivePolicyName,
   getIndexedChunkCount,
   hasCustomPolicy,
   ingestPolicyFile,
   queryIngestedPolicy,
-  synthesizeUnderwritingAdvice,
+  resolveOpenAiApiKey,
+  setSessionOpenAiApiKey,
   type IngestProgressStage,
   type RetrievalResult,
 } from "../../services/policyIngestionEngine";
 import { formatInr } from "../../utils/currency";
 
 const ACCEPTED_EXTENSIONS = [".pdf", ".docx", ".txt"] as const;
-const ACCEPT_ATTR = ".pdf,.docx,.txt,application/pdf,application/vnd.openxmlformats-officedocument.wordprocessingml.document,text/plain";
+const ACCEPT_ATTR =
+  ".pdf,.docx,.txt,application/pdf,application/vnd.openxmlformats-officedocument.wordprocessingml.document,text/plain";
 
 const STAGE_LABEL: Record<Exclude<IngestProgressStage, "done" | "error">, string> = {
   extracting: "Extracting text",
@@ -49,6 +51,42 @@ function progressPipelineLabel(stage: IngestProgressStage | null): string {
     .join(" → ");
 }
 
+/** Lightweight prose rendering for advisory text (paragraphs + simple bullets). */
+function AdvisoryProse({ text }: { text: string }) {
+  const blocks = text
+    .split(/\n\s*\n/)
+    .map((block) => block.trim())
+    .filter((block) => block.length > 0);
+
+  return (
+    <div className="policy-advisory-prose" data-testid="policy-synthesized-advice">
+      {blocks.map((block, index) => {
+        const lines = block.split("\n").map((line) => line.trim()).filter(Boolean);
+        const isList = lines.length > 1 && lines.every((line) => /^[-•*]/.test(line));
+        if (isList) {
+          return (
+            <ul key={`b-${index}`}>
+              {lines.map((line, lineIndex) => (
+                <li key={`l-${index}-${lineIndex}`}>{line.replace(/^[-•*]\s*/, "")}</li>
+              ))}
+            </ul>
+          );
+        }
+        return (
+          <p key={`b-${index}`}>
+            {lines.map((line, lineIndex) => (
+              <span key={`s-${index}-${lineIndex}`}>
+                {lineIndex > 0 ? <br /> : null}
+                {line}
+              </span>
+            ))}
+          </p>
+        );
+      })}
+    </div>
+  );
+}
+
 export function PolicyUploadWidget({
   foirPct,
   loanAmount,
@@ -68,8 +106,17 @@ export function PolicyUploadWidget({
   const [results, setResults] = useState<RetrievalResult[]>([]);
   const [advice, setAdvice] = useState<string | null>(null);
   const [searched, setSearched] = useState(false);
+  const [searching, setSearching] = useState(false);
 
-  const busy = ingestStage === "extracting" || ingestStage === "chunking" || ingestStage === "indexing";
+  const [keyPanelOpen, setKeyPanelOpen] = useState(false);
+  const [apiKeyDraft, setApiKeyDraft] = useState(() => resolveOpenAiApiKey() ?? "");
+  const [hasSessionKey, setHasSessionKey] = useState(() => Boolean(resolveOpenAiApiKey()));
+
+  const busy =
+    ingestStage === "extracting" ||
+    ingestStage === "chunking" ||
+    ingestStage === "indexing" ||
+    searching;
 
   const suggestionChips = useMemo(() => {
     const roundedFoir = Math.round(foirPct);
@@ -133,21 +180,25 @@ export function PolicyUploadWidget({
     }
   }
 
-  function runSearch(rawQuery: string): void {
+  async function runSearch(rawQuery: string): Promise<void> {
     const trimmed = rawQuery.trim();
     if (trimmed === "") {
       return;
     }
     setQuery(trimmed);
-    const hits = queryIngestedPolicy(trimmed, 3);
-    setResults(hits);
-    setAdvice(synthesizeUnderwritingAdvice(trimmed, hits));
-    setSearched(true);
-  }
-
-  function handleInsert(result: RetrievalResult): void {
-    onInsertIntoDecisionNote(formatCitationForDecisionNote(result));
-    showSuccessToast("Cited rule inserted into Decision Note.");
+    setSearching(true);
+    try {
+      const hits = queryIngestedPolicy(trimmed, 3);
+      setResults(hits);
+      const answer = await generatePolicyAnswer(
+        trimmed,
+        hits.map((hit) => hit.chunk),
+      );
+      setAdvice(answer);
+      setSearched(true);
+    } finally {
+      setSearching(false);
+    }
   }
 
   function handleInsertAdvice(): void {
@@ -155,7 +206,26 @@ export function PolicyUploadWidget({
       return;
     }
     onInsertIntoDecisionNote(advice);
-    showSuccessToast("Synthesized advice inserted into Decision Note.");
+    showSuccessToast("Underwriting advisory inserted into Decision Note.");
+  }
+
+  function handleSaveApiKey(): void {
+    setSessionOpenAiApiKey(apiKeyDraft);
+    const resolved = Boolean(resolveOpenAiApiKey());
+    setHasSessionKey(resolved);
+    setKeyPanelOpen(false);
+    showSuccessToast(
+      resolved
+        ? "OpenAI key saved for this session."
+        : "OpenAI key cleared. Demo fallback answers will be used.",
+    );
+  }
+
+  function handleClearApiKey(): void {
+    setApiKeyDraft("");
+    setSessionOpenAiApiKey(null);
+    setHasSessionKey(Boolean(resolveOpenAiApiKey()));
+    showSuccessToast("OpenAI key cleared. Demo fallback answers will be used.");
   }
 
   return (
@@ -171,15 +241,43 @@ export function PolicyUploadWidget({
             {activeBadge}
           </p>
         </div>
-        <button
-          type="button"
-          className="btn btn-secondary btn-sm"
-          disabled={busy}
-          onClick={() => fileInputRef.current?.click()}
-          data-testid="policy-upload-trigger"
-        >
-          Upload New Policy Document (.pdf / .docx)
-        </button>
+        <div className="policy-rag-topbar-actions">
+          <button
+            type="button"
+            className="btn btn-ghost btn-sm policy-key-btn"
+            disabled={busy}
+            onClick={() => setKeyPanelOpen((open) => !open)}
+            data-testid="policy-openai-key-toggle"
+            aria-expanded={keyPanelOpen}
+            title="Optionally supply an OpenAI API key for live completions"
+          >
+            <svg
+              className="policy-key-icon"
+              width="14"
+              height="14"
+              viewBox="0 0 24 24"
+              fill="none"
+              stroke="currentColor"
+              strokeWidth="2"
+              strokeLinecap="round"
+              strokeLinejoin="round"
+              aria-hidden="true"
+            >
+              <path d="M21 2l-2 2m-7.61 7.61a5.5 5.5 0 1 1-7.778 7.778 5.5 5.5 0 0 1 7.777-7.777zm0 0L15.5 7.5m0 0l3 3L22 7l-3-3m-3.5 3.5L19 4" />
+            </svg>
+            Set OpenAI Key (Optional)
+            {hasSessionKey ? <span className="policy-key-dot" title="Key configured" /> : null}
+          </button>
+          <button
+            type="button"
+            className="btn btn-secondary btn-sm"
+            disabled={busy}
+            onClick={() => fileInputRef.current?.click()}
+            data-testid="policy-upload-trigger"
+          >
+            Upload New Policy Document (.pdf / .docx)
+          </button>
+        </div>
         <input
           ref={fileInputRef}
           type="file"
@@ -189,6 +287,45 @@ export function PolicyUploadWidget({
           onChange={handleFileChange}
         />
       </div>
+
+      {keyPanelOpen && (
+        <div className="policy-key-panel" data-testid="policy-openai-key-panel">
+          <label htmlFor="policy-openai-key-input">
+            OpenAI API key (stored in sessionStorage only)
+          </label>
+          <div className="policy-key-controls">
+            <input
+              id="policy-openai-key-input"
+              type="password"
+              autoComplete="off"
+              value={apiKeyDraft}
+              onChange={(e) => setApiKeyDraft(e.target.value)}
+              placeholder="sk-…"
+              data-testid="policy-openai-key-input"
+            />
+            <button
+              type="button"
+              className="btn btn-primary btn-sm"
+              onClick={handleSaveApiKey}
+              data-testid="policy-openai-key-save"
+            >
+              Save
+            </button>
+            <button
+              type="button"
+              className="btn btn-secondary btn-sm"
+              onClick={handleClearApiKey}
+              data-testid="policy-openai-key-clear"
+            >
+              Clear
+            </button>
+          </div>
+          <p className="muted policy-key-hint">
+            When set, answers use gpt-4o-mini. Otherwise a fluent local underwriting advisory is
+            generated from retrieved policy clauses.
+          </p>
+        </div>
+      )}
 
       <div
         className={`policy-dropzone${dragOver ? " policy-dropzone--active" : ""}`}
@@ -224,9 +361,14 @@ export function PolicyUploadWidget({
         </p>
       </div>
 
-      {busy && (
+      {busy && ingestStage && (
         <p className="policy-ingest-progress" data-testid="policy-ingest-progress" role="status">
           {progressPipelineLabel(ingestStage)}
+        </p>
+      )}
+      {searching && (
+        <p className="policy-ingest-progress" data-testid="policy-search-progress" role="status">
+          Generating underwriting advisory…
         </p>
       )}
       {ingestError && (
@@ -239,7 +381,7 @@ export function PolicyUploadWidget({
         className="policy-search-row"
         onSubmit={(e) => {
           e.preventDefault();
-          runSearch(query);
+          void runSearch(query);
         }}
       >
         <label className="policy-search-label" htmlFor="policy-rag-query">
@@ -273,66 +415,62 @@ export function PolicyUploadWidget({
             type="button"
             className="helper-chip policy-suggestion-chip"
             disabled={busy}
-            onClick={() => runSearch(chip)}
+            onClick={() => void runSearch(chip)}
           >
             {chip}
           </button>
         ))}
       </div>
 
-      {searched && (
+      {searched && advice && (
         <div className="policy-rag-results" data-testid="policy-rag-results">
-          <h3>Retrieved Policy Clauses</h3>
-          {results.length === 0 ? (
-            <p className="muted">No matching clauses above the relevance threshold.</p>
-          ) : (
-            <ul className="policy-clause-list">
-              {results.map((result) => (
-                <li key={result.chunk.id} className="policy-clause-item">
-                  <div className="policy-clause-meta">
-                    <span className="policy-clause-source">{result.chunk.sourceDoc}</span>
-                    <span className="muted">
-                      Chunk #{result.chunk.chunkIndex} · {result.chunk.pageLabel}
-                    </span>
-                    <span
-                      className="policy-score-badge"
-                      data-testid="policy-score-badge"
-                      title="Pseudo-cosine similarity"
-                    >
-                      {result.score.toFixed(2)}
-                    </span>
-                  </div>
-                  <blockquote className="policy-clause-snippet">{result.chunk.content}</blockquote>
-                  <button
-                    type="button"
-                    className="btn btn-secondary btn-sm"
-                    disabled={insertDisabled}
-                    onClick={() => handleInsert(result)}
-                    data-testid="insert-citation-btn"
-                  >
-                    Insert into Decision Note
-                  </button>
-                </li>
-              ))}
-            </ul>
-          )}
-
-          <h3>Synthesized Underwriting Advice</h3>
-          <AdvisoryBanner />
-          <pre className="policy-advice-block" data-testid="policy-synthesized-advice">
-            {advice}
-          </pre>
-          {advice && (
+          <div className="policy-advisory-block" data-testid="policy-advisory-block">
+            <div className="policy-advisory-header">
+              <h3>Underwriting Advisory &amp; Policy Guidance</h3>
+              <AdvisoryBanner />
+            </div>
+            <AdvisoryProse text={advice} />
             <button
               type="button"
-              className="btn btn-secondary btn-sm"
+              className="btn btn-primary btn-sm policy-insert-advice-btn"
               disabled={insertDisabled}
               onClick={handleInsertAdvice}
               data-testid="insert-advice-btn"
             >
               Insert into Decision Note
             </button>
-          )}
+          </div>
+
+          <details className="policy-citations-disclosure" data-testid="policy-citations-disclosure">
+            <summary className="policy-citations-summary">
+              Source Document Citations (Audit Ledger) — Show {results.length} Retrieved Chunk
+              {results.length === 1 ? "" : "s"}
+            </summary>
+            {results.length === 0 ? (
+              <p className="muted">No matching clauses above the relevance threshold.</p>
+            ) : (
+              <ul className="policy-clause-list">
+                {results.map((result) => (
+                  <li key={result.chunk.id} className="policy-clause-item">
+                    <div className="policy-clause-meta">
+                      <span className="policy-clause-source">{result.chunk.sourceDoc}</span>
+                      <span className="muted">
+                        Chunk #{result.chunk.chunkIndex} · {result.chunk.pageLabel}
+                      </span>
+                      <span
+                        className="policy-score-badge"
+                        data-testid="policy-score-badge"
+                        title="Pseudo-cosine similarity"
+                      >
+                        {result.score.toFixed(2)}
+                      </span>
+                    </div>
+                    <blockquote className="policy-clause-snippet">{result.chunk.content}</blockquote>
+                  </li>
+                ))}
+              </ul>
+            )}
+          </details>
         </div>
       )}
 
