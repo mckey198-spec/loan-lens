@@ -1,6 +1,14 @@
 # LoanLens
 
+[![Live Demo](https://img.shields.io/badge/Live_Demo-Vercel-000000?style=for-the-badge&logo=vercel)](https://loan-lens.vercel.app)
+[![TypeScript](https://img.shields.io/badge/TypeScript-007ACC?style=for-the-badge&logo=typescript&logoColor=white)](https://www.typescriptlang.org/)
+[![React](https://img.shields.io/badge/React_18-20232A?style=for-the-badge&logo=react&logoColor=61DAFB)](https://react.dev/)
+[![FastAPI](https://img.shields.io/badge/FastAPI-009688?style=for-the-badge&logo=fastapi&logoColor=white)](https://fastapi.tiangolo.com/)
+[![Tests](https://img.shields.io/badge/Frontend_Tests-51%20Passing-brightgreen?style=for-the-badge)]()
+
 **Live demo:** [https://loan-lens.vercel.app](https://loan-lens.vercel.app)
+
+> 📄 **Formal Architecture Spec:** Review the [Architecture Decision Records (ADRs 001–008)](./docs/LoanLens_Architectural_Decision_Records.pdf) covering regulatory compliance, Maker-Checker state machine, tamper-evident SHA-256 ledger mechanics, and deterministic credit math.
 
 Retail loan verification and underwriting support. LoanLens gives a lending desk a maker-checker workflow, deterministic credit math, a tamper-evident audit ledger, and an advisory policy copilot. Officers originate applications. Reviewers decide them. Admins govern roles and prove the ledger. No language model computes an instalment, a ratio, or a pass/fail gate.
 
