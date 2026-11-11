@@ -2,6 +2,7 @@ import { useEffect, useMemo, useState } from "react";
 import { Link, useParams } from "react-router-dom";
 
 import { StatusBadge } from "../../components/StatusBadge";
+import { PolicyUploadWidget } from "../../components/rag/PolicyUploadWidget";
 import { homePathFor, ROLE_LABELS, useWorkspace } from "../../context/useWorkspace";
 import { ApiError } from "../../api/types";
 import { apiClient } from "../../services/apiClient";
@@ -516,6 +517,21 @@ export function ApplicationDetailPage() {
             )}
           </div>
         </form>
+
+        {(role === "reviewer" || role === "admin") && (
+          <PolicyUploadWidget
+            foirPct={liveFoir.foirPct}
+            loanAmount={liveAmount}
+            insertDisabled={!deciding || busy}
+            onInsertIntoDecisionNote={(text) => {
+              setForm((prev) => {
+                const existing = prev.reviewerNote.trim();
+                const next = existing === "" ? text : `${existing}\n\n${text}`;
+                return { ...prev, reviewerNote: next };
+              });
+            }}
+          />
+        )}
 
         <section
           className="application-audit-ledger"

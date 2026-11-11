@@ -1,4 +1,4 @@
-import { screen, within } from "@testing-library/react";
+import { screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
@@ -138,18 +138,22 @@ describe("admin workspace", () => {
 
     await user.click(screen.getByTestId("simulate-ledger-mutation"));
 
-    expect(await screen.findByTestId("audit-integrity-badge")).toHaveTextContent(
-      "Chain Integrity Compromised at Block 2",
-    );
+    await waitFor(() => {
+      expect(screen.getByTestId("audit-integrity-badge")).toHaveTextContent(
+        "Chain Integrity Compromised at Block 2",
+      );
+    });
     expect(verifySpy).toHaveBeenCalled();
     expect(await screen.findByTestId("repair-ledger")).toBeInTheDocument();
 
     await user.click(screen.getByTestId("repair-ledger"));
 
     const events = await getMockAuditEvents();
-    expect(await screen.findByTestId("audit-integrity-badge")).toHaveTextContent(
-      `Verified (${events.length} blocks intact)`,
-    );
+    await waitFor(() => {
+      expect(screen.getByTestId("audit-integrity-badge")).toHaveTextContent(
+        `Verified (${events.length} blocks intact)`,
+      );
+    });
     expect(screen.queryByTestId("repair-ledger")).not.toBeInTheDocument();
   });
 });
